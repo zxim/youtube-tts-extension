@@ -1,147 +1,85 @@
-// 0) 네비게이션 시작 감지해서 TTS 취소
-window.addEventListener('yt-navigate-start', () => {
-  window.speechSynthesis.cancel();
-});
+import { speak, numberToKoreanSino, parseKoreanUnitNumber } from './ttsHelper';
 
-// 1) 페이지 타입 검사
-function isWatchPage() {
-  return location.pathname === '/watch' && location.search.includes('v=');
-}
-function isShortsPage() {
-  return location.pathname.startsWith('/shorts/');
+// 문장 중 숫자만 찾아서 한자 숫자로 변환하는 함수
+function replaceNumbersWithSinoKorean(text: string): string {
+  return text.replace(/\d+/g, (match) => numberToKoreanSino(parseInt(match, 10)));
 }
 
-// 2) TTS 함수 (새로운 읽기 시작 전 이전 읽기 중단)
-function speak(text: string) {
-  window.speechSynthesis.cancel();           // 기존 음성 취소
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'ko-KR';
-  window.speechSynthesis.speak(u);
-}
+// 피드 카드에 Shift+Hover 시 TTS로 읽어주는 바인딩
+function bindHoverDynamicText(): void {
+  const selectors = 'div#dismissible, ytm-shorts-lockup-view-model-v2';
+  document.querySelectorAll<HTMLElement>(selectors).forEach(card => {
+    if (card.dataset.ttsBound) return;
+    card.dataset.ttsBound = 'true';
 
-// 3) watch 페이지: #info-strings 위에서 Shift+Hover
-function setupWatchHover() {
-  const info = document.querySelector<HTMLElement>('#info-strings');
-  if (!info || info.dataset.ttsBound) return;
-  info.dataset.ttsBound = 'true';
-
-  info.addEventListener('mouseenter', (e: MouseEvent) => {
-    if (!e.shiftKey) return;
-    const title   = document.querySelector<HTMLElement>('h1.title yt-formatted-string')
-                    ?.textContent?.trim() || '제목 없음';
-    const channel = document.querySelector<HTMLElement>('#owner-name a')
-                    ?.textContent?.trim()   || '채널명 없음';
-    const meta    = Array.from(
-      document.querySelectorAll<HTMLElement>('#metadata-line .inline-metadata-item')
-    );
-    const views   = meta[0]?.textContent?.trim() || '조회수 없음';
-    const date    = meta[1]?.textContent?.trim() || '업로드 시간 없음';
-    speak(`제목 ${title}, 채널 ${channel}, ${views}, 업로드 ${date}`);
-  });
-}
-
-// 4) shorts 페이지: header 위에서 Shift+Hover
-function setupShortsHover() {
-  const header = document.querySelector<HTMLElement>('ytd-shorts-header-renderer');
-  if (!header || header.dataset.ttsBound) return;
-  header.dataset.ttsBound = 'true';
-
-  header.addEventListener('mouseenter', (e: MouseEvent) => {
-    if (!e.shiftKey) return;
-    const title = header.querySelector<HTMLElement>(
-      'h1.ytd-shorts-header-renderer'
-    )?.textContent?.trim() || '제목 없음';
-    const views = document.querySelector<HTMLElement>('.view-count')
-                    ?.textContent?.trim()             || '조회수 없음';
-    speak(`유튜브 쇼츠. 제목 ${title}, ${views}`);
-  });
-}
-
-// 5) 피드 일반 영상: dismissible→details 위에서 Shift+Hover
-function setupFeedHover() {
-  document.querySelectorAll<HTMLDivElement>('div#dismissible').forEach(item => {
-    if (item.dataset.ttsBound) return;
-    item.dataset.ttsBound = 'true';
-
-    item.addEventListener('mouseenter', (e: MouseEvent) => {
+    card.addEventListener('mouseenter', (e: MouseEvent) => {
       if (!e.shiftKey) return;
 
-      const details = item.querySelector<HTMLDivElement>('#details');
-      if (!details) return;
+      // 1) 전체 텍스트 줄 단위로 분리 후 노이즈 제거
+      const rawLines = (card.innerText || '')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(line => line.length > 0);
 
-      const titleEl   = details.querySelector<HTMLElement>('yt-formatted-string#video-title');
-      const title     = titleEl?.textContent?.trim() || '';
-      const channelEl = details.querySelector<HTMLAnchorElement>('div#text-container a');
-      const channel   = channelEl?.textContent?.trim()   || '';
-      const metaEls   = Array.from(
-        details.querySelectorAll<HTMLElement>('span.inline-metadata-item')
+      const lines = rawLines.filter(line =>
+        !line.includes('재생') &&
+        !/^\d{1,2}:\d{2}$/.test(line) &&
+        !/^자동재생/.test(line)
       );
-      const views     = metaEls[0]?.textContent?.trim()  || '';
-      const date      = metaEls[1]?.textContent?.trim()  || '';
+      if (lines.length < 2) return;
 
-      const parts: string[] = [];
-      if (title)   parts.push(`제목 ${title}`);
-      if (channel) parts.push(`채널 ${channel}`);
-      if (views)   parts.push(`${views}`);
-      if (date)    parts.push(`업로드 ${date}`);
+      // 2) 제목·채널
+      let title   = lines[0];
+      let channel = lines[1];
 
-      if (parts.length) speak(parts.join(', '));
+      // 숫자가 있다면 한자식 숫자로 변환
+      title = replaceNumbersWithSinoKorean(title);
+      channel = replaceNumbersWithSinoKorean(channel);
+
+      // 3) 조회수 파싱
+      const viewRaw = lines.find(line => /조회수/.test(line) || /[0-9.]+[천만억]?회/.test(line)) || '';
+      let viewText = '';
+      if (viewRaw) {
+        const match = viewRaw.match(/([\d.]+)([천만억]?)(?=회)/);
+        if (match) {
+          const numStr = match[1] + (match[2] || '');
+          const parsed = parseKoreanUnitNumber(numStr);
+          if (parsed !== null) {
+            viewText = `${numberToKoreanSino(parsed)}회`;
+          }
+        }
+      }
+
+      // 4) 업로드 날짜 파싱
+      const dateRaw = lines.find(line => /전$/.test(line) || line.startsWith('업로드')) || '';
+      let dateText = '';
+      if (dateRaw) {
+        const dm = dateRaw.match(/(\d+)(개월|일|시간|분)/);
+        if (dm) {
+          const num = parseInt(dm[1], 10);
+          const unit = dm[2];
+          dateText = `올린 시간 ${numberToKoreanSino(num)}${unit} 전`;
+        } else {
+          // 혹시 다른 형식이면 전체 문장 숫자 변환
+          dateText = `올린 시간 ${replaceNumbersWithSinoKorean(dateRaw)}`;
+        }
+      }
+
+      // 5) 조합 & TTS
+      const parts = [`제목 ${title}`, `채널명 ${channel}`];
+      if (viewText) parts.push(`조회수 ${viewText}`);
+      if (dateText) parts.push(dateText);
+
+      speak(parts.join(', '));
     });
   });
 }
 
-// 6) 피드 쇼츠 영상: ytm-shorts-lockup-view-model-v2 위에서 Shift+Hover
-function setupFeedShortsHover() {
-  document.querySelectorAll<HTMLElement>('ytm-shorts-lockup-view-model-v2').forEach(item => {
-    if (item.dataset.ttsBound) return;
-    item.dataset.ttsBound = 'true';
-
-    item.addEventListener('mouseenter', (e: MouseEvent) => {
-      if (!e.shiftKey) return;
-
-      // 제목: h3 안 span 텍스트
-      const title = item.querySelector<HTMLElement>(
-        'h3.shortsLockupViewModelHostMetadataTitle span.yt-core-attributed-string'
-      )?.textContent?.trim() || '제목 없음';
-
-      // 조회수: subhead 안 span 텍스트
-      const views = item.querySelector<HTMLElement>(
-        'div.shortsLockupViewModelHostMetadataSubhead span.yt-core-attributed-string'
-      )?.textContent?.trim() || '조회수 없음';
-
-      speak(`쇼츠 영상. 제목 ${title}, ${views}`);
-    });
-  });
+function init(): void {
+  bindHoverDynamicText();
 }
 
-// 7) 피드 동적 감시 (일반 영상 + 쇼츠 영상)
-function observeFeed() {
-  const container = document.querySelector<HTMLElement>(
-    'ytd-rich-grid-renderer, ytd-section-list-renderer, ytd-grid-renderer'
-  );
-  if (!container) return;
-  setupFeedHover();
-  setupFeedShortsHover();
-  new MutationObserver(() => {
-    setupFeedHover();
-    setupFeedShortsHover();
-  }).observe(container, { childList: true, subtree: true });
-}
-
-// 8) 초기화: 상황별 setup 호출
-function init() {
-  if (isWatchPage()) {
-    setupWatchHover();
-  } else if (isShortsPage()) {
-    setupShortsHover();
-  } else {
-    observeFeed();
-  }
-}
-
-// SPA 내비게이션과 첫 로드에 바인딩
-window.addEventListener('yt-navigate-finish', () => {
-  window.speechSynthesis.cancel();  // 안전을 위해 한 번 더
-  init();
-});
+// SPA 내비게이션 및 동적 로드 대응
+window.addEventListener('yt-navigate-finish', init);
 window.addEventListener('load', init);
+new MutationObserver(init).observe(document.body, { childList: true, subtree: true });
