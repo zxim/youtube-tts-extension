@@ -1,35 +1,59 @@
-import { speak, numberToKoreanSino, parseKoreanUnitNumber } from './ttsHelper';
+import { speak, numberToKoreanSino, numberToNativeKorean, parseKoreanUnitNumber } from './ttsHelper';
 
-// 문장 중 숫자만 찾아서 한자 숫자로 변환하는 함수
+// 숫자 한자 변환
 function replaceNumbersWithSinoKorean(text: string): string {
   return text.replace(/\d+/g, (match) => numberToKoreanSino(parseInt(match, 10)));
 }
 
-// "순수 시간 포맷" 줄인지 판별 (예: 1:24, 1:24:39)
+// 순수 시간 포맷 판별 (1:24, 1:24:39 같은거)
 function isPureTimeFormat(text: string): boolean {
   return /^(\d{1,2}:\d{2}(:\d{2})?)$/.test(text.trim());
 }
 
-// 카드 하나 읽기
+// 카드 읽기
 function readCard(card: HTMLElement): void {
   const rawLines = (card.innerText || '')
     .split(/\r?\n/)
     .map(line => line.trim())
     .filter(line => line.length > 0);
 
+  // 노이즈 제거
   const lines = rawLines.filter(line =>
     !line.includes('재생') &&
     !/^자동재생/.test(line) &&
     !isPureTimeFormat(line)
   );
-  if (lines.length < 2) return;
+  if (lines.length === 0) return;
 
-  let title = lines[0];
-  let channel = lines[1];
+  // 쇼츠 여부 판별
+  const isShorts = card.tagName.toLowerCase() === 'ytm-shorts-lockup-view-model-v2';
 
-  title = replaceNumbersWithSinoKorean(title);
-  channel = replaceNumbersWithSinoKorean(channel);
+  // 라이브 여부, 시청자수 줄 찾기
+  const isLive = rawLines.some(line => /라이브|실시간/.test(line));
+  const viewerLine = rawLines.find(line => /명 시청 중/.test(line)) || '';
+  const viewerText = viewerLine ? replaceNumbersWithSinoKorean(viewerLine) : '';
 
+  // 제목 찾기
+  const titleLine = lines.find(line =>
+    !/라이브|실시간/.test(line) &&
+    !/조회수/.test(line) &&
+    !/명 시청 중/.test(line) &&
+    !/업로드/.test(line)
+  ) || '';
+
+  const title = replaceNumbersWithSinoKorean(titleLine);
+
+  // 채널명 찾기
+  const titleIndex = lines.indexOf(titleLine);
+  const channelLine = lines.slice(titleIndex + 1).find(line =>
+    !/조회수/.test(line) &&
+    !/명 시청 중/.test(line) &&
+    !/업로드/.test(line)
+  ) || '';
+
+  const channel = replaceNumbersWithSinoKorean(channelLine);
+
+  // 조회수 (라이브 아닌 경우만)
   const viewRaw = lines.find(line => /조회수/.test(line) || /[0-9.]+[천만억]?회/.test(line)) || '';
   let viewText = '';
   if (viewRaw) {
@@ -43,6 +67,7 @@ function readCard(card: HTMLElement): void {
     }
   }
 
+  // 업로드 날짜 (라이브 아닌 경우만)
   const dateRaw = lines.find(line => /전$/.test(line) || line.startsWith('업로드')) || '';
   let dateText = '';
   if (dateRaw) {
@@ -50,15 +75,32 @@ function readCard(card: HTMLElement): void {
     if (dm) {
       const num = parseInt(dm[1], 10);
       const unit = dm[2];
-      dateText = `올린 시간 ${numberToKoreanSino(num)}${unit} 전`;
+      if (unit === '시간') {
+        dateText = `올린 시간 ${numberToNativeKorean(num)}${unit} 전`;
+      } else {
+        dateText = `올린 시간 ${numberToKoreanSino(num)}${unit} 전`;
+      }
     } else {
       dateText = `올린 시간 ${replaceNumbersWithSinoKorean(dateRaw)}`;
     }
   }
 
-  const parts = [`제목 ${title}`, `채널명 ${channel}`];
-  if (viewText) parts.push(`조회수 ${viewText}`);
-  if (dateText) parts.push(dateText);
+  // TTS 조합
+  const parts: string[] = [];
+
+  if (isShorts) parts.push('쇼츠 영상');
+  if (isLive) parts.push('라이브 영상');
+  if (title) parts.push(`제목 ${title}`);
+  if (channel) parts.push(`채널명 ${channel}`);
+  if (isLive && viewerText) {
+    parts.push(viewerText);
+  }
+  if (!isLive && viewText) {
+    parts.push(`조회수 ${viewText}`);
+  }
+  if (!isLive && dateText) {
+    parts.push(dateText);
+  }
 
   speak(parts.join(', '));
 }
@@ -71,7 +113,7 @@ function bindHoverDynamicText(): void {
     card.dataset.ttsBound = 'true';
 
     card.addEventListener('mouseenter', (e: MouseEvent) => {
-      if (!e.shiftKey) return;  // Shift 키가 눌려있을 때만
+      if (!e.shiftKey) return;
       window.speechSynthesis.cancel();
       readCard(card);
     });
@@ -93,5 +135,4 @@ window.addEventListener('yt-navigate-finish', () => {
 });
 window.addEventListener('load', init);
 
-// 동적 감지
 new MutationObserver(init).observe(document.body, { childList: true, subtree: true });
