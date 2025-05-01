@@ -10,6 +10,11 @@ function isPureTimeFormat(text: string): boolean {
   return /^(\d{1,2}:\d{2}(:\d{2})?)$/.test(text.trim());
 }
 
+// 실제 실시간 배지 있는지 확인 
+function hasLiveBadge(card: HTMLElement): boolean {
+  return !!card.querySelector('ytd-badge-supported-renderer p')?.textContent?.includes('실시간');
+}
+
 // 카드 읽기
 function readCard(card: HTMLElement): void {
   const rawLines = (card.innerText || '')
@@ -17,7 +22,6 @@ function readCard(card: HTMLElement): void {
     .map(line => line.trim())
     .filter(line => line.length > 0);
 
-  // 노이즈 제거
   const lines = rawLines.filter(line =>
     !line.includes('재생') &&
     !/^자동재생/.test(line) &&
@@ -25,15 +29,11 @@ function readCard(card: HTMLElement): void {
   );
   if (lines.length === 0) return;
 
-  // 쇼츠 여부 판별
   const isShorts = card.tagName.toLowerCase() === 'ytm-shorts-lockup-view-model-v2';
-
-  // 라이브 여부, 시청자수 줄 찾기
-  const isLive = rawLines.some(line => /라이브|실시간/.test(line));
+  const isLive = hasLiveBadge(card); 
   const viewerLine = rawLines.find(line => /명 시청 중/.test(line)) || '';
   const viewerText = viewerLine ? replaceNumbersWithSinoKorean(viewerLine) : '';
 
-  // 제목 찾기
   const titleLine = lines.find(line =>
     !/라이브|실시간/.test(line) &&
     !/조회수/.test(line) &&
@@ -43,7 +43,6 @@ function readCard(card: HTMLElement): void {
 
   const title = replaceNumbersWithSinoKorean(titleLine);
 
-  // 채널명 찾기
   const titleIndex = lines.indexOf(titleLine);
   const channelLine = lines.slice(titleIndex + 1).find(line =>
     !/조회수/.test(line) &&
@@ -53,7 +52,6 @@ function readCard(card: HTMLElement): void {
 
   const channel = replaceNumbersWithSinoKorean(channelLine);
 
-  // 조회수 (라이브 아닌 경우만)
   const viewRaw = lines.find(line => /조회수/.test(line) || /[0-9.]+[천만억]?회/.test(line)) || '';
   let viewText = '';
   if (viewRaw) {
@@ -67,7 +65,6 @@ function readCard(card: HTMLElement): void {
     }
   }
 
-  // 업로드 날짜 (라이브 아닌 경우만)
   const dateRaw = lines.find(line => /전$/.test(line) || line.startsWith('업로드')) || '';
   let dateText = '';
   if (dateRaw) {
@@ -85,7 +82,6 @@ function readCard(card: HTMLElement): void {
     }
   }
 
-  // TTS 조합
   const parts: string[] = [];
 
   if (isShorts) parts.push('쇼츠 영상');
